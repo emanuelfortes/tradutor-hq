@@ -2,7 +2,7 @@
 
 App para celular: você abre as páginas, ele lê o texto dos balões e mostra a tradução por cima da imagem. Depois é só passar para a próxima página.
 
-- **Idiomas:** inglês, coreano (manhwa/webtoon), chinês simplificado e chinês tradicional, sempre traduzindo para português.
+- **Idiomas do quadrinho:** inglês, espanhol, coreano (manhwa/webtoon), chinês simplificado e chinês tradicional. **Tradução para:** português (padrão), espanhol ou inglês.
 - **Leitura do texto (OCR):** feita no próprio celular, com o Tesseract. Suas imagens nunca saem do aparelho.
 - **Tradução com contexto:** os balões da página vão juntos para o Google Tradutor, na ordem de leitura e com o fim da página anterior. Assim ele entende a conversa em vez de traduzir frases soltas. É gratuito e sem chave, e só o texto é enviado.
 - **Visual:** a tradução pega a cor do balão e ocupa o espaço dele.
@@ -27,7 +27,7 @@ Na primeira abertura ele baixa o leitor de texto (~8 MB) e o idioma escolhido (~
 - **Deslizar para os lados**, ou ◀ ▶, troca de página.
 - **Tocar num balão** alterna entre a tradução e o texto original.
 - **Ver original** esconde todas as traduções.
-- **⚙️** escolhe o idioma do quadrinho, o idioma de destino e o tradutor.
+- **⚙️** escolhe o idioma do quadrinho, o idioma para o qual traduzir e o tradutor.
 
 ## Limitações
 
