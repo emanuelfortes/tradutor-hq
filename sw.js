@@ -1,5 +1,6 @@
-// Guarda o app no aparelho para abrir sem internet.
-const VERSAO = 'tradutor-hq-v8';
+// Guarda o app e os idiomas do leitor de texto no aparelho, para abrir sem internet.
+const VERSAO = 'tradutor-hq-v9';
+const IDIOMAS = 'tradutor-hq-idiomas';   // não muda com a versão: o idioma baixado continua guardado
 const ARQUIVOS = [
   './', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png',
@@ -14,23 +15,42 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((nomes) => Promise.all(nomes.filter((n) => n !== VERSAO).map((n) => caches.delete(n))))
+      .then((nomes) => Promise.all(nomes.filter((n) => n !== VERSAO && n !== IDIOMAS).map((n) => caches.delete(n))))
       .then(() => self.clients.claim()),
   );
 });
 
-self.addEventListener('fetch', (e) => {
-  const url = new URL(e.request.url);
-  if (e.request.method !== 'GET') return;
-  // Arquivos do próprio app: usa o que está guardado, e atualiza em segundo plano.
-  if (url.origin === location.origin) {
-    e.respondWith(
-      caches.open(VERSAO).then(async (cache) => {
-        const guardado = await cache.match(e.request, { ignoreSearch: true });
-        const rede = fetch(e.request).then((r) => { if (r.ok) cache.put(e.request, r.clone()); return r; }).catch(() => null);
-        return guardado || (await rede) || new Response('Sem conexão', { status: 503 });
-      }),
-    );
+/** Usa o guardado; se não tiver, baixa e guarda. */
+async function guardadoPrimeiro(nomeCache, req) {
+  const cache = await caches.open(nomeCache);
+  const guardado = await cache.match(req, { ignoreSearch: true });
+  if (guardado) return guardado;
+  const r = await fetch(req);
+  if (r.ok) cache.put(req, r.clone());
+  return r;
+}
+
+/** Tenta a internet primeiro (pega atualizações na hora); sem internet, usa o guardado. */
+async function redePrimeiro(req) {
+  const cache = await caches.open(VERSAO);
+  try {
+    const r = await fetch(req, { cache: 'no-cache' });
+    if (r.ok) cache.put(req, r.clone());
+    return r;
+  } catch (_) {
+    return (await cache.match(req, { ignoreSearch: true })) || new Response('Sem conexão', { status: 503 });
   }
-  // Traduções do Google e dados de idioma passam direto (o Tesseract guarda os idiomas sozinho).
+}
+
+self.addEventListener('fetch', (e) => {
+  if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  if (url.origin === location.origin) {
+    // o leitor de texto (vendor/) é grande e só muda junto com a versão; o resto do app vem atualizado
+    e.respondWith(url.pathname.includes('/vendor/') ? guardadoPrimeiro(VERSAO, e.request) : redePrimeiro(e.request));
+  } else if (url.href.startsWith('https://cdn.jsdelivr.net/npm/@tesseract.js-data/')) {
+    // dados de idioma do leitor de texto: baixa uma vez e guarda
+    e.respondWith(guardadoPrimeiro(IDIOMAS, e.request));
+  }
+  // traduções do Google passam direto
 });

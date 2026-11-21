@@ -73,17 +73,39 @@ async function obterOcr(idioma) {
   if (ocrWorker && ocrIdioma === idioma) return ocrWorker;
   if (ocrWorker) { const velho = ocrWorker; ocrWorker = null; ocrIdioma = null; await velho.terminate().catch(() => {}); }
   const base = new URL('vendor/', location.href).href;
+  const nome = IDIOMAS[idioma].nome;
   status('Preparando leitor de texto (só demora na 1ª vez)…');
-  const worker = await Tesseract.createWorker(idioma, 1, {
+  const criando = Tesseract.createWorker(idioma, 1, {
     workerPath: base + 'worker.min.js',
     corePath: base,
     workerBlobURL: false,
+    // Não usa o banco de dados do navegador (IndexedDB) para guardar o idioma: em alguns celulares
+    // ele trava ao gravar e o app ficava parado em "50%". Quem guarda o idioma é o sw.js.
+    cacheMethod: 'none',
     logger: (m) => {
-      if (m.status === 'loading language traineddata' && m.progress < 1) {
-        status(`Baixando idioma ${IDIOMAS[idioma].nome}… ${Math.round(m.progress * 100)}%`);
+      // o Tesseract só avisa 0% (baixando), 50% (baixou) e 100% (instalou); não dá para mostrar % real
+      if (m.status === 'loading language traineddata') {
+        status(m.progress < 0.5 ? `Baixando idioma ${nome} (só na 1ª vez)…` : `Instalando idioma ${nome}…`);
+      } else if (m.status === 'initializing api' && m.progress < 1) {
+        status('Iniciando leitor de texto…');
       }
     },
   });
+  // se travar, não deixa o app parado para sempre: avisa e deixa tentar de novo
+  let relogio;
+  const limite = new Promise((_, falhar) => {
+    relogio = setTimeout(() => falhar(new Error(
+      `o idioma ${nome} não terminou de carregar. Confira a internet e troque de página para tentar de novo.`)), 120000);
+  });
+  let worker;
+  try {
+    worker = await Promise.race([criando, limite]);
+  } catch (e) {
+    criando.then((w) => w.terminate()).catch(() => {}); // se terminar depois, desliga
+    throw e;
+  } finally {
+    clearTimeout(relogio);
+  }
   await worker.setParameters({ preserve_interword_spaces: '1' });
   ocrWorker = worker;
   ocrIdioma = idioma;

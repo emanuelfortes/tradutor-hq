@@ -19,7 +19,7 @@ Para ser instalado, um PWA precisa estar num endereço **https**. O jeito mais f
 3. Ele gera um link do tipo `https://nome-aleatorio.netlify.app`.
 4. Abra esse link no **Chrome do celular**, toque em ⋮ e depois em **Adicionar à tela inicial** (ou "Instalar app").
 
-Na primeira abertura ele baixa o leitor de texto (~8 MB) e o idioma escolhido (~10 MB). Depois disso, só a tradução pelo Google precisa de internet.
+Na primeira abertura ele baixa o leitor de texto (~8 MB) e o idioma escolhido (2 a 3 MB). Depois disso, só a tradução pelo Google precisa de internet.
 
 ## Como usar
 
