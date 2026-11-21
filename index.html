@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111318">
+  <title>Tradutor de HQ</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topo">
+    <button id="btnAbrir" class="icone" title="Abrir arquivos" aria-label="Abrir arquivos">📂</button>
+    <div class="titulo">
+      <span id="contador">Tradutor de HQ</span>
+      <span id="status" class="status"></span>
+    </div>
+    <button id="btnConfig" class="icone" title="Configurações" aria-label="Configurações">⚙️</button>
+  </header>
+
+  <main id="visor">
+    <section id="vazio" class="vazio">
+      <div class="balao-logo">Aあ</div>
+      <h1>Tradutor de HQ</h1>
+      <p>Abra as páginas (várias imagens de uma vez, ou um arquivo CBZ/ZIP). O texto dos balões é lido e traduzido por cima da imagem.</p>
+      <button id="btnAbrirGrande" class="primario">Abrir páginas</button>
+      <p class="dica">Toque num balão traduzido para ver o original. Deslize para os lados para trocar de página.</p>
+    </section>
+    <div id="palco" class="palco" hidden>
+      <img id="imagem" alt="Página do quadrinho">
+      <div id="camada" class="camada"></div>
+    </div>
+  </main>
+
+  <nav class="base" id="base" hidden>
+    <button id="btnAnt" aria-label="Página anterior">◀</button>
+    <button id="btnOriginal" class="alternar">Ver original</button>
+    <button id="btnProx" aria-label="Próxima página">▶</button>
+  </nav>
+
+  <input id="arquivos" type="file" accept="image/*,.cbz,.zip,application/zip,application/x-zip-compressed,application/vnd.comicbook+zip" multiple hidden>
+
+  <dialog id="config">
+    <form method="dialog">
+      <h2>Configurações</h2>
+      <label>Idioma do quadrinho
+        <select id="cfgOrigem">
+          <option value="eng">Inglês</option>
+          <option value="kor">Coreano (manhwa / webtoon)</option>
+          <option value="chi_sim">Chinês simplificado (manhua da China)</option>
+          <option value="chi_tra">Chinês tradicional (Taiwan / Hong Kong)</option>
+        </select>
+      </label>
+      <p class="dica">A tradução é sempre para português.</p>
+      <label>Tradutor
+        <select id="cfgMotor">
+          <option value="google">Google Tradutor (precisa de internet)</option>
+          <option value="local">No aparelho (offline, se o navegador suportar)</option>
+        </select>
+      </label>
+      <label class="linha"><input type="checkbox" id="cfgMaiusculas"> Mostrar tradução em MAIÚSCULAS (estilo HQ)</label>
+      <p class="dica" id="infoLocal"></p>
+      <menu>
+        <button value="ok" class="primario">Salvar</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="vendor/tesseract.min.js"></script>
+  <script src="vendor/jszip.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+:root {
+  --fundo: #111318;
+  --painel: #1b1e25;
+  --texto: #eef0f4;
+  --suave: #9aa1ad;
+  --destaque: #ffcc33;
+  --balao: #ffffff;
+  --balao-texto: #111111;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--fundo); color: var(--texto);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body { display: flex; flex-direction: column; }
+button { font: inherit; color: inherit; cursor: pointer; }
+
+.topo { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  padding-top: max(8px, env(safe-area-inset-top)); background: var(--painel); }
+.titulo { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#contador { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status { font-size: 12px; color: var(--suave); min-height: 1em; }
+.icone { background: none; border: 0; font-size: 22px; padding: 6px; border-radius: 8px; }
+.icone:active { background: #ffffff1a; }
+
+#visor { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; }
+.palco { position: relative; width: 100%; max-width: 900px; margin: 0 auto; }
+.palco img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+.camada { position: absolute; inset: 0; }
+.camada.oculta { display: none; }
+
+.caixa { position: absolute; display: flex; align-items: center; justify-content: center;
+  text-align: center; background: var(--balao); color: var(--balao-texto); border-radius: 8px;
+  padding: 2px 3px; overflow: hidden; line-height: 1.12; font-weight: 700;
+  font-family: "Comic Sans MS", "Comic Neue", "Chalkboard SE", system-ui, sans-serif;
+  word-break: break-word; hyphens: auto; }
+.caixa.maiusculas { text-transform: uppercase; }
+.caixa.original { outline: 2px dashed #ffcc33; outline-offset: -2px; }
+
+.vazio { max-width: 460px; margin: 0 auto; padding: 48px 16px; text-align: center; }
+.vazio h1 { margin: 12px 0 8px; font-size: 26px; }
+.vazio p { color: var(--suave); line-height: 1.5; }
+.balao-logo { display: inline-flex; align-items: center; justify-content: center; width: 88px; height: 72px;
+  background: var(--balao); color: #111; border-radius: 50%; font-size: 30px; font-weight: 800; }
+.primario { background: var(--destaque); color: #111; border: 0; border-radius: 12px;
+  padding: 14px 22px; font-weight: 700; font-size: 17px; margin: 16px 0; }
+.dica { font-size: 13px; color: var(--suave); }
+
+.base { display: flex; gap: 8px; padding: 8px 12px; padding-bottom: max(8px, env(safe-area-inset-bottom));
+  background: var(--painel); }
+.base button { background: #2a2e38; border: 0; border-radius: 12px; padding: 12px; font-size: 18px; }
+.base #btnAnt, .base #btnProx { width: 64px; }
+.base .alternar { flex: 1; font-size: 15px; }
+.base .alternar.ativo { background: var(--destaque); color: #111; }
+.base button:disabled { opacity: .35; }
+
+dialog { background: var(--painel); color: var(--texto); border: 0; border-radius: 16px;
+  width: min(420px, calc(100vw - 32px)); padding: 20px; }
+dialog::backdrop { background: #0009; }
+dialog h2 { margin-top: 0; }
+dialog label { display: block; margin: 14px 0; font-size: 14px; color: var(--suave); }
+dialog label.linha { display: flex; gap: 8px; align-items: center; color: var(--texto); }
+dialog select { display: block; width: 100%; margin-top: 6px; padding: 10px; font-size: 16px;
+  border-radius: 10px; background: #2a2e38; color: var(--texto); border: 1px solid #3a3f4b; }
+dialog menu { display: flex; justify-content: flex-end; padding: 0; margin: 8px 0 0; }
