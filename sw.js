@@ -1,5 +1,5 @@
 // Guarda o app no aparelho para abrir sem internet.
-const VERSAO = 'tradutor-hq-v6';
+const VERSAO = 'tradutor-hq-v7';
 const ARQUIVOS = [
   './', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png',

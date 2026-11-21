@@ -109,7 +109,7 @@ async function reconhecer(canvas, modo, idioma) {
  * Recorta um pedaço da página, deixa em preto e branco (contraste automático de Otsu)
  * e apaga linhas retas compridas (bordas de quadro e de legenda atrapalham o OCR).
  */
-function prepararRecorte(bitmap, sx, sy, sw, sh, escala) {
+function prepararRecorte(bitmap, sx, sy, sw, sh, escala, balao) {
   const w = Math.max(1, Math.round(sw * escala)), h = Math.max(1, Math.round(sh * escala));
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
@@ -117,10 +117,26 @@ function prepararRecorte(bitmap, sx, sy, sw, sh, escala) {
   ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, w, h);
   const img = ctx.getImageData(0, 0, w, h);
   const px = img.data;
+  // com o balão conhecido: tudo fora dele (borda, desenho, outros balões) é pintado com a cor do fundo
+  if (balao) {
+    const [r, g, b] = balao.cor.map(Math.round);
+    const pintar = (y, xa, xb) => { for (let x = Math.max(0, xa); x < Math.min(w, xb); x++) { const i = (y * w + x) * 4; px[i] = r; px[i + 1] = g; px[i + 2] = b; } };
+    for (let y = 0; y < h; y++) {
+      const ys = Math.floor((sy + (y + 0.5) / escala) * balao.s) - balao.y0;
+      const mn = ys >= 0 && ys < balao.min.length ? balao.min[ys] : 1;
+      const mx = ys >= 0 && ys < balao.max.length ? balao.max[ys] : 0;
+      if (mn > mx) { pintar(y, 0, w); continue; }
+      pintar(y, 0, Math.floor((mn / balao.s - sx) * escala));
+      pintar(y, Math.ceil(((mx + 1) / balao.s - sx) * escala), w);
+    }
+  }
+  // balão escuro com letra clara: inverte, para o OCR sempre ver letra escura em fundo claro
+  const inverter = balao && luminancia(balao.cor) < 110;
   const cinza = new Uint8Array(w * h);
   const hist = new Uint32Array(256);
   for (let i = 0, j = 0; j < cinza.length; i += 4, j++) {
-    const v = (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000 | 0;
+    let v = (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000 | 0;
+    if (inverter) v = 255 - v;
     cinza[j] = v; hist[v]++;
   }
   const total = w * h;
@@ -173,11 +189,15 @@ function textoValido(texto, confianca) {
   if (letras === 1 && confianca < 75) return false;          // um caractere solto costuma ser ruído
   if (confianca < (asiatico ? 40 : 50)) return false;
   if ((texto.match(JAMO) || []).length / letras > 0.15) return false;
-  return letras / texto.replace(/\s/g, '').length >= 0.5;
+  // pelo menos metade do que sobra (sem espaços e sem pontuação comum, como "...") tem que ser letra
+  const resto = texto.replace(/[\s.,!?…~♥'"“”‘’¡¿！？。，、]/g, '').length;
+  return resto > 0 && letras / resto >= 0.5;
 }
 
 function limparTexto(texto, idioma) {
   let t = texto.replace(JAMO, '').replace(/\s+/g, ' ').trim()
+    // aspa ou risco solto (sem palavra grudada) é sujeira da borda do balão
+    .replace(/(^|\s)['"`‘’“”]+(?=\s|$)/g, '$1').replace(/\s+/g, ' ').trim()
     // em HQ o "!" no fim de palavra em maiúsculas costuma ser lido como "l" ou "|"
     .replace(/(\p{Lu}{2,})[l|](?=\s|$)/gu, '$1!')
     // reticências lidas como ". .", ".…", "…." etc.
@@ -229,10 +249,13 @@ const SILABAS_INTEIRAS = /^[가-힣\p{Script=Han}!?.,…~！？。，、]+$/u;
  */
 function palavraBoa(w, linha, idioma) {
   const p = w.text.trim();
-  if (SO_PONTUACAO.test(p)) return true;
-  if (!/[\p{L}\d]/u.test(p)) return false;
-  if (w.confidence >= 30) return true;
   const asiatico = IDIOMAS[idioma]?.escrita !== 'latina';
+  if (SO_PONTUACAO.test(p)) return true;
+  if (p === '|') return !asiatico && w.confidence >= 50;  // pode ser o "I"; montarLinha decide
+  if (!/[\p{L}\d]/u.test(p)) return false;
+  // em texto coreano/chinês, uma letra latina ou número solto quase sempre é a borda do balão lida errado
+  if (asiatico && /^[\p{Script=Latin}\d０-９]$/u.test(p) && w.confidence < 85) return false;
+  if (w.confidence >= 30) return true;
   return asiatico && w.confidence >= 10 && (linha.confidence ?? 0) >= 55 &&
     SILABAS_INTEIRAS.test(p) && /[가-힣\p{Script=Han}]/u.test(p);
 }
@@ -248,19 +271,46 @@ function montarLinha(linha, idioma, filtrar) {
   if (!palavras.length) return linha.text || '';
   if (filtrar) palavras = palavras.filter((w) => palavraBoa(w, linha, idioma));
   palavras = palavras.slice().sort((a, b) => a.bbox.x0 - b.bbox.x0);
+  // escrita latina: "|" encostado numa palavra é o "I" (ou o "¡"); longe de tudo, é a borda do balão
+  if (IDIOMAS[idioma]?.escrita === 'latina') {
+    const hL = linha.bbox ? linha.bbox.y1 - linha.bbox.y0 : 0;
+    palavras = palavras.filter((w, k) => {
+      if (!/^[|]$/.test(w.text.trim())) return true;
+      const h = Math.max(hL, w.bbox.y1 - w.bbox.y0);
+      const ant = palavras[k - 1], prox = palavras[k + 1];
+      return (prox && prox.bbox.x0 - w.bbox.x1 < h) || (ant && w.bbox.x0 - ant.bbox.x1 < h * 0.6 && prox);
+    });
+  }
   const alturaLinha = linha.bbox ? linha.bbox.y1 - linha.bbox.y0 : 0;
   const escrita = IDIOMAS[idioma]?.escrita || 'latina';
+  const silabas = (t) => (t.match(/[가-힣]/g) || []).length;
+  const pont = (t) => SO_PONTUACAO.test(t.trim());
+  // coreano: a distância entre sílabas soltas da mesma palavra varia com a fonte (algumas são bem espaçadas).
+  // Usa a distância típica entre sílabas soltas desta linha como referência.
+  const distSoltas = [];
+  for (let k = 1; k < palavras.length; k++) {
+    const a = palavras[k - 1].text.trim(), b = palavras[k].text.trim();
+    if (!pont(a) && !pont(b) && (silabas(a) === 1 || silabas(b) === 1)) distSoltas.push(palavras[k].bbox.x0 - palavras[k - 1].bbox.x1);
+  }
+  distSoltas.sort((a, b) => a - b);
+  const distTipica = distSoltas.length ? distSoltas[(distSoltas.length - 1) >> 1] : 0;
   let texto = '';
   palavras.forEach((w, k) => {
     const p = w.text.trim();
     const ant = palavras[k - 1];
     if (ant) {
+      const pa = ant.text.trim();
       const h = Math.max(alturaLinha, ant.bbox.y1 - ant.bbox.y0, w.bbox.y1 - w.bbox.y0);
       const dist = w.bbox.x0 - ant.bbox.x1;
       let espaco;
-      if (escrita === 'latina') espaco = !SO_PONTUACAO.test(p) || dist > h * 0.3;
-      else if (escrita === 'coreana') espaco = dist > h * 0.35 && !SO_PONTUACAO.test(p);
-      else espaco = false;
+      if (escrita === 'latina') espaco = !pont(p) || dist > h * 0.3;
+      else if (escrita === 'coreana') {
+        if (pont(p)) espaco = false;                                   // pontuação fica colada
+        else if (pont(pa)) espaco = dist > h * 0.15;                   // depois de "," ou "..." costuma ter espaço
+        else if (dist > h * 0.6) espaco = true;                        // distância grande: com certeza é espaço
+        else if (silabas(pa) > 1 && silabas(p) > 1) espaco = dist > h * 0.25; // o OCR já separou as palavras
+        else espaco = dist > (distSoltas.length >= 2 ? Math.max(h * 0.35, distTipica * 1.5) : h * 0.45);
+      } else espaco = false;
       texto += espaco ? ' ' : '';
     }
     texto += p;
@@ -386,32 +436,51 @@ function agruparLinhas(linhasBrutas, idioma) {
   return res.sort(ordemLeitura);
 }
 
-/** 2ª leitura: relê cada balão recortado, no modo "bloco de texto", que é mais preciso. */
+/**
+ * 2ª leitura: relê cada balão recortado, no modo "bloco de texto", que é mais preciso.
+ * Se o balão foi encontrado, lê ele inteiro (com o que está fora dele apagado):
+ * assim pega também as linhas que a 1ª leitura deixou passar.
+ */
 async function relerBalao(bitmap, g, escala, idioma) {
   const lh = g.alturaLinha;
-  const x0 = Math.max(0, g.x0 - lh * 1.0), y0 = Math.max(0, g.y0 - lh * 0.6);
-  const x1 = Math.min(bitmap.width, g.x1 + lh * 1.0), y1 = Math.min(bitmap.height, g.y1 + lh * 0.6);
+  const b = g.balao;
+  let x0, y0, x1, y1;
+  if (b) {
+    x0 = Math.max(0, b.x0 / b.s - 2); y0 = Math.max(0, b.y0 / b.s - 2);
+    x1 = Math.min(bitmap.width, (b.x1 + 1) / b.s + 2); y1 = Math.min(bitmap.height, (b.y1 + 1) / b.s + 2);
+  } else {
+    x0 = Math.max(0, g.x0 - lh * 1.0); y0 = Math.max(0, g.y0 - lh * 0.6);
+    x1 = Math.min(bitmap.width, g.x1 + lh * 1.0); y1 = Math.min(bitmap.height, g.y1 + lh * 0.6);
+  }
   // amplia (ou reduz) o recorte para as letras ficarem com ~48 px de altura, o tamanho que o OCR lê melhor
-  const escalaBalao = Math.max(0.4, Math.min(4, 48 / Math.max(1, lh), 2500 / (x1 - x0), 2500 / (y1 - y0)));
-  const data = await reconhecer(prepararRecorte(bitmap, x0, y0, x1 - x0, y1 - y0, escalaBalao), '6', idioma);
+  const e = Math.max(0.4, Math.min(4, 48 / Math.max(1, lh), 2500 / (x1 - x0), 2500 / (y1 - y0)));
+  const data = await reconhecer(prepararRecorte(bitmap, x0, y0, x1 - x0, y1 - y0, e, b), '6', idioma);
   const linhas = [];
   let somaConf = 0, nPalavras = 0;
   for (const l of data.lines || []) {
+    const t = limparTexto(montarLinha(l, idioma, true), idioma);
+    if (!textoValido(t, l.confidence)) continue;                     // linha de ruído (borda, desenho)
     for (const w of l.words || []) {
       if (w.confidence >= 30 && /[\p{L}\d]/u.test(w.text)) { somaConf += w.confidence; nPalavras++; }
     }
-    linhas.push(limparTexto(montarLinha(l, idioma, true), idioma));
+    linhas.push({ texto: t, x0: x0 + l.bbox.x0 / e, x1: x0 + l.bbox.x1 / e, y0: y0 + l.bbox.y0 / e, y1: y0 + l.bbox.y1 / e });
   }
-  const texto = juntarLinhas(linhas);
+  if (!linhas.length) return;
+  const texto = juntarLinhas(linhas.map((l) => l.texto));
   const conf = nPalavras ? somaConf / nPalavras : 0;
-  if (conf < 55 || !textoValido(texto, conf)) return;
   const nNovo = contarLetras(texto), nVelho = contarLetras(g.original);
-  // a releitura é mais precisa: usa quando ela é tão confiável quanto a 1ª e não perdeu texto,
-  // ou quando achou texto que a 1ª leitura deixou passar
-  if ((nNovo >= nVelho * 0.75 && conf >= g.conf - 8) || (nNovo > nVelho * 1.1 && conf >= 60)) {
-    g.original = texto;
-    g.conf = conf;
-  }
+  let usar;
+  if (b) usar = conf >= 45 && textoValido(texto, conf) && nNovo >= nVelho * 0.6;
+  // sem balão: usa quando é tão confiável quanto a 1ª e não perdeu texto, ou quando achou texto a mais
+  else usar = conf >= 55 && textoValido(texto, conf) &&
+    ((nNovo >= nVelho * 0.75 && conf >= g.conf - 8) || (nNovo > nVelho * 1.1 && conf >= 60));
+  if (!usar) return;
+  g.original = texto;
+  g.conf = conf;
+  // a caixa da tradução passa a cobrir todas as linhas lidas
+  g.x0 = Math.min(...linhas.map((l) => l.x0)); g.y0 = Math.min(...linhas.map((l) => l.y0));
+  g.x1 = Math.max(...linhas.map((l) => l.x1)); g.y1 = Math.max(...linhas.map((l) => l.y1));
+  g.alturaLinha = linhas.reduce((s, l) => s + (l.y1 - l.y0), 0) / linhas.length;
 }
 
 // ------------------------------------------------------------ cor do fundo e tamanho do balão
@@ -483,18 +552,118 @@ function ajustarAoBalao(g, a, W, H) {
   };
 }
 
+const luminancia = (c) => (c[0] * 299 + c[1] * 587 + c[2] * 114) / 1000;
+
+/**
+ * Acha o balão em volta de um texto: pinta, a partir da borda do texto, toda a área contínua
+ * com a cor do fundo dele. Se a área for fechada (um balão), devolve o contorno dela, linha por linha.
+ * Se "vazar" (texto solto em cima do desenho, ou balão aberto num fundo da mesma cor), devolve null.
+ * rotulos marca os pixels já visitados: >0 = balão já achado, -1 = área aberta.
+ */
+function detectarBalao(a, g, rotulos, baloes) {
+  const lh = Math.max(1, g.alturaLinha * a.s);
+  const m = Math.max(2, Math.round(lh * 0.5));
+  const bx0 = Math.max(0, Math.floor(g.x0 * a.s) - m), by0 = Math.max(0, Math.floor(g.y0 * a.s) - m);
+  const bx1 = Math.min(a.w - 1, Math.ceil(g.x1 * a.s) + m), by1 = Math.min(a.h - 1, Math.ceil(g.y1 * a.s) + m);
+  const cor = corDeFundo(a, bx0, by0, bx1, by1);
+  // sementes: pixels da moldura em volta do texto com a cor do fundo
+  const sementes = [];
+  let moldura = 0;
+  const olhar = (x, y) => {
+    moldura++;
+    const i = y * a.w + x;
+    if (distCor(a.px, i * 4, cor) < 50) sementes.push(i);
+  };
+  for (let x = bx0; x <= bx1; x++) { olhar(x, by0); olhar(x, by1); }
+  for (let y = by0 + 1; y < by1; y++) { olhar(bx0, y); olhar(bx1, y); }
+  if (sementes.length < moldura * 0.5) return null;       // o texto não está num fundo liso
+  for (const i of sementes) {
+    if (rotulos[i] > 0) return baloes[rotulos[i] - 1];
+    if (rotulos[i] < 0) return null;
+  }
+  const id = baloes.length + 1;
+  const limite = Math.min(a.w * a.h * 0.35, Math.max(5000, (bx1 - bx0 + 1) * (by1 - by0 + 1) * 60));
+  const min = new Int32Array(a.h).fill(a.w), max = new Int32Array(a.h).fill(-1);
+  const pilha = sementes.slice(), pintados = [];
+  for (const i of sementes) rotulos[i] = id;
+  let vazou = false;
+  while (pilha.length) {
+    const i = pilha.pop();
+    pintados.push(i);
+    if (pintados.length > limite) { vazou = true; break; }
+    const x = i % a.w, y = (i - x) / a.w;
+    if (x < min[y]) min[y] = x;
+    if (x > max[y]) max[y] = x;
+    if (x > 0) vizinho(i - 1);
+    if (x < a.w - 1) vizinho(i + 1);
+    if (y > 0) vizinho(i - a.w);
+    if (y < a.h - 1) vizinho(i + a.w);
+  }
+  function vizinho(n) {
+    if (rotulos[n] || distCor(a.px, n * 4, cor) >= 70) return;
+    rotulos[n] = id; pilha.push(n);
+  }
+  let y0 = a.h, y1 = -1, x0 = a.w, x1 = -1;
+  if (!vazou) for (let y = 0; y < a.h; y++) if (max[y] >= 0) {
+    if (y < y0) y0 = y;
+    y1 = y;
+    if (min[y] < x0) x0 = min[y];
+    if (max[y] > x1) x1 = max[y];
+  }
+  if (vazou || x1 - x0 > a.w * 0.95) {
+    for (const i of pintados) rotulos[i] = -1;
+    for (const i of pilha) rotulos[i] = -1;
+    return null;
+  }
+  const balao = { id, s: a.s, cor, x0, y0, x1, y1, min: min.slice(y0, y1 + 1), max: max.slice(y0, y1 + 1) };
+  baloes.push(balao);
+  return balao;
+}
+
+/** Grupos de texto que estão no mesmo balão viram um só (a 1ª leitura às vezes separa). */
+function juntarPorBalao(grupos, amostra) {
+  const rotulos = new Int32Array(amostra.w * amostra.h);
+  const baloes = [];
+  const res = [];
+  for (const g of grupos) {
+    g.balao = detectarBalao(amostra, g, rotulos, baloes);
+    const igual = g.balao && res.find((o) => o.balao === g.balao);
+    if (!igual) { res.push(g); continue; }
+    const [p, q] = ordemLeitura(igual, g) <= 0 ? [igual, g] : [g, igual];
+    igual.original = juntarLinhas([p.original, q.original]);
+    igual.conf = (igual.conf + g.conf) / 2;
+    igual.alturaLinha = (igual.alturaLinha + g.alturaLinha) / 2;
+    igual.x0 = Math.min(igual.x0, g.x0); igual.y0 = Math.min(igual.y0, g.y0);
+    igual.x1 = Math.max(igual.x1, g.x1); igual.y1 = Math.max(igual.y1, g.y1);
+  }
+  return res;
+}
+
+/** Depois da releitura, dois grupos podem ter lido o mesmo texto: fica o que leu mais. */
+function tirarRepetidos(grupos) {
+  const area = (g) => Math.max(1, (g.x1 - g.x0) * (g.y1 - g.y0));
+  return grupos.filter((g, i) => !grupos.some((o, j) => {
+    if (i === j) return false;
+    const sx = Math.min(g.x1, o.x1) - Math.max(g.x0, o.x0), sy = Math.min(g.y1, o.y1) - Math.max(g.y0, o.y0);
+    if (sx <= 0 || sy <= 0 || sx * sy < Math.min(area(g), area(o)) * 0.5) return false;
+    const ng = contarLetras(g.original), no = contarLetras(o.original);
+    return no > ng || (no === ng && j < i);
+  }));
+}
+
 async function lerPagina(blob, idioma, aviso) {
   const bitmap = await createImageBitmap(blob);
   try {
     const W = bitmap.width, H = bitmap.height;
     const escala = Math.min(2, Math.max(0.4, LARGURA_OCR / W));
-    const grupos = agruparLinhas(await acharLinhas(bitmap, escala, idioma, aviso), idioma);
+    const amostra = amostraColorida(bitmap);
+    let grupos = juntarPorBalao(agruparLinhas(await acharLinhas(bitmap, escala, idioma, aviso), idioma), amostra);
     for (let i = 0; i < grupos.length; i++) {
       aviso(`Lendo balão ${i + 1} de ${grupos.length}…`);
       await relerBalao(bitmap, grupos[i], escala, idioma);
     }
-    const amostra = amostraColorida(bitmap);
-    grupos.forEach((g) => { g.caixa = ajustarAoBalao(g, amostra, W, H); });
+    grupos = tirarRepetidos(grupos).sort(ordemLeitura);
+    grupos.forEach((g) => { g.caixa = ajustarAoBalao(g, amostra, W, H); delete g.balao; });
     return { W, H, grupos };
   } finally {
     bitmap.close && bitmap.close();
