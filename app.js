@@ -779,8 +779,12 @@ function processar(indice) {
   const op = { origem: cfg.origem, destino: cfg.destino, motor: cfg.motor }; // fixa as opções deste trabalho
   p.assinatura = assinatura;
   p.resultado = null;
+  // identifica este trabalho; criado antes de começar, porque o início do trabalho roda na hora
+  const vez = {};
+  p.vez = vez;
+  const atualizado = () => p.vez === vez; // as opções não mudaram desde que este trabalho começou
   const trabalho = (async () => {
-    const aviso = (t) => { if (indice === atual && p.trabalho === trabalho) status(t); };
+    const aviso = (t) => { if (indice === atual && atualizado()) status(t); };
     aviso('Procurando os balões…');
     const r = await lerPagina(await p.obterBlob(), op.origem, aviso);
     aviso(r.grupos.length ? `Traduzindo ${r.grupos.length} balão(ões)…` : 'Nenhum texto encontrado.');
@@ -788,11 +792,11 @@ function processar(indice) {
     const contexto = ant?.resultado && ant.assinatura === assinatura ? ant.resultado.grupos.slice(-3).map((g) => g.original) : [];
     const traducoes = await traduzirPagina(r.grupos.map((g) => g.original), contexto, op);
     r.grupos.forEach((g, i) => { g.traducao = traducoes[i] || g.original; });
-    if (p.trabalho === trabalho) p.resultado = r; // só guarda se as opções não mudaram no meio
+    if (atualizado()) p.resultado = r; // só guarda se as opções não mudaram no meio
     return r;
   })();
   p.trabalho = trabalho;
-  trabalho.catch(() => { if (p.trabalho === trabalho) p.trabalho = null; });
+  trabalho.catch(() => { if (atualizado()) p.trabalho = null; });
   return trabalho;
 }
 
