@@ -23,8 +23,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .icone { background: none; border: 0; font-size: 22px; padding: 6px; border-radius: 8px; }
 .icone:active { background: #ffffff1a; }
 
-#visor { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; }
-.palco { position: relative; width: 100%; max-width: 900px; margin: 0 auto; }
+/* o visor centraliza a página; margin:auto (e não justify-content) para nunca cortar o topo quando rola */
+#visor { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; }
+.palco { position: relative; flex: none; width: 100%; margin: auto; }
 .palco img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
 .camada { position: absolute; inset: 0; }
 .camada.oculta { display: none; }
@@ -52,7 +54,21 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .base #btnAnt, .base #btnProx { width: 64px; }
 .base .alternar { flex: 1; font-size: 15px; }
 .base .alternar.ativo { background: var(--destaque); color: #111; }
+.base .ajuste { width: 52px; }
 .base button:disabled { opacity: .35; }
+
+/* celular deitado: barras finas, para sobrar altura para a página; respeita o entalhe da câmera */
+body { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+@media (orientation: landscape) and (max-height: 540px) {
+  .topo { padding: 2px 12px; padding-top: max(2px, env(safe-area-inset-top)); }
+  .titulo { flex-direction: row; align-items: baseline; gap: 10px; }
+  .icone { font-size: 18px; padding: 2px 6px; }
+  .base { padding: 3px 12px; padding-bottom: max(3px, env(safe-area-inset-bottom)); }
+  .base button { padding: 5px 10px; font-size: 16px; border-radius: 10px; }
+  .base .alternar { font-size: 14px; }
+  .vazio { padding: 16px; }
+  .balao-logo { display: none; }
+}
 
 dialog { background: var(--painel); color: var(--texto); border: 0; border-radius: 16px;
   width: min(420px, calc(100vw - 32px)); padding: 20px; }

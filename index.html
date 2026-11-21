@@ -37,6 +37,7 @@
   <nav class="base" id="base" hidden>
     <button id="btnAnt" aria-label="Página anterior">◀</button>
     <button id="btnOriginal" class="alternar">Ver original</button>
+    <button id="btnAjuste" class="ajuste" title="Ocupar a largura da tela" aria-label="Ocupar a largura da tela">↔</button>
     <button id="btnProx" aria-label="Próxima página">▶</button>
   </nav>
 
@@ -67,6 +68,13 @@
           <option value="local">No aparelho (offline, se o navegador suportar)</option>
         </select>
       </label>
+      <label>Enquadramento
+        <select id="cfgAjuste">
+          <option value="auto">Automático (página inteira; webtoon pela largura)</option>
+          <option value="inteira">Sempre a página inteira na tela</option>
+          <option value="largura">Sempre pela largura (rolar para baixo)</option>
+        </select>
+      </label>
       <label class="linha"><input type="checkbox" id="cfgMaiusculas"> Mostrar tradução em MAIÚSCULAS (estilo HQ)</label>
       <p class="dica" id="infoLocal"></p>
       <menu>
@@ -75,7 +83,8 @@
     </form>
   </dialog>
 
-  <script src="vendor/tesseract.min.js"></script>
+  <script src="vendor/ort.wasm.min.js"></script>
+  <script src="paddle.js"></script>
   <script src="vendor/jszip.min.js"></script>
   <script src="app.js"></script>
 </body>

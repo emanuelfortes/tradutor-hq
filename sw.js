@@ -1,11 +1,12 @@
-// Guarda o app e os idiomas do leitor de texto no aparelho, para abrir sem internet.
-const VERSAO = 'tradutor-hq-v9';
-const IDIOMAS = 'tradutor-hq-idiomas';   // não muda com a versão: o idioma baixado continua guardado
+// Guarda o app e os modelos do leitor de texto no aparelho, para abrir sem internet.
+const VERSAO = 'tradutor-hq-v10';
+// modelos do leitor de texto: ficam guardados entre versões do app (só mudam se o nome mudar)
+const MODELOS = 'tradutor-hq-modelos-v1';
 const ARQUIVOS = [
-  './', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
+  './', 'index.html', 'style.css', 'app.js', 'paddle.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png',
-  'vendor/tesseract.min.js', 'vendor/worker.min.js', 'vendor/jszip.min.js',
-  'vendor/tesseract-core-simd-lstm.wasm.js', 'vendor/tesseract-core-lstm.wasm.js',
+  'vendor/jszip.min.js', 'vendor/ort.wasm.min.js', 'vendor/ort-wasm-simd-threaded.mjs',
+  'vendor/ort-wasm-simd-threaded.wasm',
 ];
 
 self.addEventListener('install', (e) => {
@@ -15,7 +16,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((nomes) => Promise.all(nomes.filter((n) => n !== VERSAO && n !== IDIOMAS).map((n) => caches.delete(n))))
+      .then((nomes) => Promise.all(nomes.filter((n) => n !== VERSAO && n !== MODELOS).map((n) => caches.delete(n))))
       .then(() => self.clients.claim()),
   );
 });
@@ -45,12 +46,9 @@ async function redePrimeiro(req) {
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
-  if (url.origin === location.origin) {
-    // o leitor de texto (vendor/) é grande e só muda junto com a versão; o resto do app vem atualizado
-    e.respondWith(url.pathname.includes('/vendor/') ? guardadoPrimeiro(VERSAO, e.request) : redePrimeiro(e.request));
-  } else if (url.href.startsWith('https://cdn.jsdelivr.net/npm/@tesseract.js-data/')) {
-    // dados de idioma do leitor de texto: baixa uma vez e guarda
-    e.respondWith(guardadoPrimeiro(IDIOMAS, e.request));
-  }
-  // traduções do Google passam direto
+  if (url.origin !== location.origin) return; // traduções do Google passam direto
+  if (url.pathname.includes('/modelos/')) e.respondWith(guardadoPrimeiro(MODELOS, e.request));
+  // o motor do leitor (vendor/) é grande e só muda junto com a versão; o resto do app vem atualizado
+  else if (url.pathname.includes('/vendor/')) e.respondWith(guardadoPrimeiro(VERSAO, e.request));
+  else e.respondWith(redePrimeiro(e.request));
 });

@@ -1,9 +1,8 @@
-/* Tradutor de HQ: lê o texto das páginas (OCR com Tesseract, no aparelho) e traduz para português por cima da imagem. */
+/* Tradutor de HQ: lê o texto das páginas (OCR com PaddleOCR, no aparelho) e traduz para português por cima da imagem. */
 'use strict';
 
 const $ = (id) => document.getElementById(id);
 const EXT_IMAGEM = /\.(jpe?g|jfif|png|webp|gif|bmp|avif)$/i;
-const LARGURA_OCR = 1500;   // largura em que a página é lida (bom equilíbrio entre precisão e velocidade)
 
 // Idiomas do quadrinho: código do OCR -> código do Google e do tradutor offline do navegador.
 // escrita: 'latina' (palavras separadas por espaço), 'coreana' (espaço entre blocos de sílabas), 'chinesa' (sem espaço)
@@ -18,14 +17,14 @@ const IDIOMAS = {
 const DESTINOS = { pt: 'Português', es: 'Espanhol', en: 'Inglês' };
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u; // escritas sem espaço entre palavras
 const JAMO = /[ㄱ-ㆎ]/g;  // pedaços soltos de letra coreana: sinal de leitura errada
-const SO_PONTUACAO = /^[!?.,…¡¿！？。，、~\-–—'"“”‘’#♥♡❤]+$/;
 
 // ------------------------------------------------------------ configurações
-const PADRAO = { origem: 'eng', destino: 'pt', motor: 'google', maiusculas: true };
+const PADRAO = { origem: 'eng', destino: 'pt', motor: 'google', maiusculas: true, ajuste: 'auto' };
 let cfg = { ...PADRAO };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('cfg') || '{}')); } catch (_) {}
 if (!IDIOMAS[cfg.origem]) cfg.origem = PADRAO.origem;
 if (!DESTINOS[cfg.destino]) cfg.destino = PADRAO.destino;
+if (!['auto', 'inteira', 'largura'].includes(cfg.ajuste)) cfg.ajuste = PADRAO.ajuste;
 const salvarCfg = () => { try { localStorage.setItem('cfg', JSON.stringify(cfg)); } catch (_) {} };
 const assinaturaCfg = () => `${cfg.origem}|${cfg.destino}|${cfg.motor}`;
 
@@ -57,149 +56,84 @@ async function abrirArquivos(lista) {
   if (!temZip) novas.sort((a, b) => ordemNatural(a.nome, b.nome)); // pag2 antes de pag10
   paginas.forEach((p) => p.url && URL.revokeObjectURL(p.url));
   paginas = novas;
+  ajusteManual = null;
   $('vazio').hidden = true;
   $('palco').hidden = false;
   $('base').hidden = false;
   irPara(0);
 }
 
-// ------------------------------------------------------------ OCR
-let ocrWorker = null, ocrIdioma = null, ocrModo = null;
+// ------------------------------------------------------------ leitor de texto (PaddleOCR no aparelho)
+// Modelo de reconhecimento de cada idioma (o chinês simplificado e o tradicional usam o mesmo)
+const MODELO_IDIOMA = { eng: 'eng', spa: 'spa', kor: 'kor', chi_sim: 'chi', chi_tra: 'chi' };
+let leitor = null, leitorIdioma = null;
 let ocrFila = Promise.resolve();
 
-// Só é chamado de dentro da fila do OCR, então nunca cria dois leitores ao mesmo tempo
-// nem desliga um leitor que ainda está trabalhando.
-async function obterOcr(idioma) {
-  if (ocrWorker && ocrIdioma === idioma) return ocrWorker;
-  if (ocrWorker) { const velho = ocrWorker; ocrWorker = null; ocrIdioma = null; await velho.terminate().catch(() => {}); }
-  const base = new URL('vendor/', location.href).href;
+/** Baixa um arquivo mostrando o progresso (o sw.js guarda no aparelho; da 2ª vez vem na hora). */
+async function baixar(url, rotulo) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`não consegui baixar ${url.split('/').pop()} (${r.status})`);
+  const total = +r.headers.get('content-length') || 0;
+  if (!r.body || !total) return new Uint8Array(await r.arrayBuffer());
+  const leitorRede = r.body.getReader();
+  const partes = [];
+  let recebido = 0, ultimo = -1;
+  for (;;) {
+    const { done, value } = await leitorRede.read();
+    if (done) break;
+    partes.push(value); recebido += value.length;
+    const pct = Math.floor((recebido / total) * 100);
+    if (pct !== ultimo && pct < 100) { ultimo = pct; status(`${rotulo}… ${pct}%`); }
+  }
+  const tudo = new Uint8Array(recebido);
+  let pos = 0;
+  for (const p of partes) { tudo.set(p, pos); pos += p.length; }
+  return tudo;
+}
+
+// Só é chamado de dentro da fila do OCR, então nunca carrega dois leitores ao mesmo tempo.
+async function obterLeitor(idioma) {
+  const modelo = MODELO_IDIOMA[idioma];
+  if (leitor && leitorIdioma === modelo) return leitor;
+  leitor = null; leitorIdioma = null;
   const nome = IDIOMAS[idioma].nome;
-  status('Preparando leitor de texto (só demora na 1ª vez)…');
-  const criando = Tesseract.createWorker(idioma, 1, {
-    workerPath: base + 'worker.min.js',
-    corePath: base,
-    workerBlobURL: false,
-    // Não usa o banco de dados do navegador (IndexedDB) para guardar o idioma: em alguns celulares
-    // ele trava ao gravar e o app ficava parado em "50%". Quem guarda o idioma é o sw.js.
-    cacheMethod: 'none',
-    logger: (m) => {
-      // o Tesseract só avisa 0% (baixando), 50% (baixou) e 100% (instalou); não dá para mostrar % real
-      if (m.status === 'loading language traineddata') {
-        status(m.progress < 0.5 ? `Baixando idioma ${nome} (só na 1ª vez)…` : `Instalando idioma ${nome}…`);
-      } else if (m.status === 'initializing api' && m.progress < 1) {
-        status('Iniciando leitor de texto…');
-      }
-    },
-  });
-  // se travar, não deixa o app parado para sempre: avisa e deixa tentar de novo
+  ort.env.wasm.wasmPaths = new URL('vendor/', location.href).href;
+  ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+  ort.env.logLevel = 'error';
+  const base = new URL('modelos/', location.href).href;
+  const carregar = (async () => {
+    const det = await baixar(base + 'det.onnx', 'Baixando leitor de texto (só na 1ª vez)');
+    const rec = await baixar(base + modelo + '.onnx', `Baixando idioma ${nome} (só na 1ª vez)`);
+    const dicionario = new TextDecoder().decode(await baixar(base + modelo + '.txt', `Baixando idioma ${nome}`));
+    status('Iniciando leitor de texto…');
+    return PaddleOCR.criar({
+      ort, det, rec, dicionario,
+      fazerCanvas: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; },
+    });
+  })();
+  // se travar (internet ruim), não deixa o app parado para sempre
   let relogio;
   const limite = new Promise((_, falhar) => {
     relogio = setTimeout(() => falhar(new Error(
-      `o idioma ${nome} não terminou de carregar. Confira a internet e troque de página para tentar de novo.`)), 120000);
+      `o idioma ${nome} não terminou de carregar. Confira a internet e troque de página para tentar de novo.`)), 180000);
   });
-  let worker;
   try {
-    worker = await Promise.race([criando, limite]);
-  } catch (e) {
-    criando.then((w) => w.terminate()).catch(() => {}); // se terminar depois, desliga
-    throw e;
+    leitor = await Promise.race([carregar, limite]);
   } finally {
     clearTimeout(relogio);
   }
-  await worker.setParameters({ preserve_interword_spaces: '1' });
-  ocrWorker = worker;
-  ocrIdioma = idioma;
-  ocrModo = null;
-  return worker;
+  leitorIdioma = modelo;
+  return leitor;
 }
 
-/**
- * Lê uma imagem. modo '11' = texto espalhado (acha os balões na página);
- * modo '6' = bloco de texto (relê um balão já encontrado, com mais precisão).
- */
-async function reconhecer(canvas, modo, idioma) {
+/** Lê o texto da página toda (na fila: um de cada vez). */
+function lerTexto(bitmap, idioma, aviso) {
   const tarefa = ocrFila.then(async () => {
-    const worker = await obterOcr(idioma);
-    if (ocrModo !== modo) { await worker.setParameters({ tessedit_pageseg_mode: modo }); ocrModo = modo; }
-    return (await worker.recognize(canvas)).data;
+    const l = await obterLeitor(idioma);
+    return l.ler(bitmap, bitmap.width, bitmap.height, aviso);
   });
   ocrFila = tarefa.catch(() => {});
   return tarefa;
-}
-
-/**
- * Recorta um pedaço da página, deixa em preto e branco (contraste automático de Otsu)
- * e apaga linhas retas compridas (bordas de quadro e de legenda atrapalham o OCR).
- */
-function prepararRecorte(bitmap, sx, sy, sw, sh, escala, balao) {
-  const w = Math.max(1, Math.round(sw * escala)), h = Math.max(1, Math.round(sh * escala));
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, w, h);
-  const img = ctx.getImageData(0, 0, w, h);
-  const px = img.data;
-  // com o balão conhecido: tudo fora dele (borda, desenho, outros balões) é pintado com a cor do fundo
-  if (balao) {
-    const [r, g, b] = balao.cor.map(Math.round);
-    const pintar = (y, xa, xb) => { for (let x = Math.max(0, xa); x < Math.min(w, xb); x++) { const i = (y * w + x) * 4; px[i] = r; px[i + 1] = g; px[i + 2] = b; } };
-    for (let y = 0; y < h; y++) {
-      const ys = Math.floor((sy + (y + 0.5) / escala) * balao.s) - balao.y0;
-      const mn = ys >= 0 && ys < balao.min.length ? balao.min[ys] : 1;
-      const mx = ys >= 0 && ys < balao.max.length ? balao.max[ys] : 0;
-      if (mn > mx) { pintar(y, 0, w); continue; }
-      pintar(y, 0, Math.floor((mn / balao.s - sx) * escala));
-      pintar(y, Math.ceil(((mx + 1) / balao.s - sx) * escala), w);
-    }
-  }
-  // balão escuro com letra clara: inverte, para o OCR sempre ver letra escura em fundo claro
-  const inverter = balao && luminancia(balao.cor) < 110;
-  const cinza = new Uint8Array(w * h);
-  const hist = new Uint32Array(256);
-  for (let i = 0, j = 0; j < cinza.length; i += 4, j++) {
-    let v = (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000 | 0;
-    if (inverter) v = 255 - v;
-    cinza[j] = v; hist[v]++;
-  }
-  const total = w * h;
-  let soma = 0; for (let t = 0; t < 256; t++) soma += t * hist[t];
-  let somaB = 0, pesoB = 0, melhor = 0, limiar = 128;
-  for (let t = 0; t < 256; t++) {
-    pesoB += hist[t]; if (!pesoB) continue;
-    const pesoF = total - pesoB; if (!pesoF) break;
-    somaB += t * hist[t];
-    const mB = somaB / pesoB, mF = (soma - somaB) / pesoF;
-    const entre = pesoB * pesoF * (mB - mF) * (mB - mF);
-    if (entre > melhor) { melhor = entre; limiar = t; }
-  }
-  const preto = new Uint8Array(w * h);
-  for (let j = 0; j < preto.length; j++) preto[j] = cinza[j] <= limiar ? 1 : 0;
-
-  // linhas retas: sequências de pixels pretos maiores que qualquer traço de letra
-  const L = Math.max(60, Math.round(LARGURA_OCR * 0.06));
-  const apagar = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    let x = 0;
-    while (x < w) {
-      if (!preto[y * w + x]) { x++; continue; }
-      const ini = x; while (x < w && preto[y * w + x]) x++;
-      if (x - ini >= L) for (let k = ini; k < x; k++) apagar[y * w + k] = 1;
-    }
-  }
-  for (let x = 0; x < w; x++) {
-    let y = 0;
-    while (y < h) {
-      if (!preto[y * w + x]) { y++; continue; }
-      const ini = y; while (y < h && preto[y * w + x]) y++;
-      if (y - ini >= L) for (let k = ini; k < y; k++) apagar[k * w + x] = 1;
-    }
-  }
-  for (let i = 0, j = 0; j < preto.length; i += 4, j++) {
-    const v = preto[j] && !apagar[j] ? 0 : 255;
-    px[i] = px[i + 1] = px[i + 2] = v; px[i + 3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-  return canvas;
 }
 
 function contarLetras(texto) { return (texto.match(/\p{L}/gu) || []).length; }
@@ -236,14 +170,15 @@ function limparTexto(texto, idioma) {
   if (idioma === 'spa') {
     // o "¡" e o "¿" do começo da frase costumam virar "i", "j", "l" ou "1"
     // (vira "¿" se a frase termina em "?", senão "¡")
-    t = t.replace(/(^|[\s"“])[ijl1|](?=\p{Lu}{2,})/gu, (m, antes, pos, todo) => {
+    t = t.replace(/(^|[\s"“])[ijl1|](?=\p{Lu}(?:\p{Lu}|\s\p{Lu}))/gu, (m, antes, pos, todo) => {
       const fim = todo.slice(pos + m.length).match(/[?!]/);
       return antes + (fim && fim[0] === '?' ? '¿' : '¡');
     });
   }
   if (escrita === 'coreana') {
     // pontuação colada na sílaba anterior, como o coreano escreve
-    t = t.replace(/(\p{Script=Hangul})\s+([!?.,…~]+)/gu, '$1$2');
+    t = t.replace(/(\p{Script=Hangul})\s+([!?.,…~]+)/gu, '$1$2')
+      .replace(/([,…?!])(?=[가-힣])/g, '$1 ');       // "으,으응" -> "으, 으응"
   }
   return t;
 }
@@ -259,114 +194,6 @@ function juntarLinhas(linhas) {
     else texto += (texto ? ' ' : '') + l;
   }
   return texto;
-}
-
-// sílabas coreanas completas / ideogramas, com pontuação: dificilmente é ruído
-const SILABAS_INTEIRAS = /^[가-힣\p{Script=Han}!?.,…~！？。，、]+$/u;
-
-/**
- * Decide se uma palavra lida entra no texto. Em coreano e chinês o OCR dá nota baixa para
- * palavras certas com letra esticada ou reticências coladas ("으응..." vem com nota 16),
- * então lá a palavra fica se for feita de sílabas inteiras e a linha toda for confiável.
- */
-function palavraBoa(w, linha, idioma) {
-  const p = w.text.trim();
-  const asiatico = IDIOMAS[idioma]?.escrita !== 'latina';
-  if (SO_PONTUACAO.test(p)) return true;
-  if (p === '|') return !asiatico && w.confidence >= 50;  // pode ser o "I"; montarLinha decide
-  if (!/[\p{L}\d]/u.test(p)) return false;
-  // em texto coreano/chinês, uma letra latina ou número solto quase sempre é a borda do balão lida errado
-  if (asiatico && /^[\p{Script=Latin}\d０-９]$/u.test(p) && w.confidence < 85) return false;
-  if (w.confidence >= 30) return true;
-  return asiatico && w.confidence >= 10 && (linha.confidence ?? 0) >= 55 &&
-    SILABAS_INTEIRAS.test(p) && /[가-힣\p{Script=Han}]/u.test(p);
-}
-
-/**
- * Monta o texto de uma linha a partir das palavras que o OCR achou, decidindo onde vai espaço:
- * - escrita latina: o OCR já separa as palavras certo; sempre espaço (menos antes de pontuação colada);
- * - coreano: o OCR costuma devolver sílaba por sílaba, então só põe espaço onde há distância de verdade;
- * - chinês: sem espaço.
- */
-function montarLinha(linha, idioma, filtrar) {
-  let palavras = (linha.words || []).filter((w) => w.text && w.text.trim());
-  if (!palavras.length) return linha.text || '';
-  if (filtrar) palavras = palavras.filter((w) => palavraBoa(w, linha, idioma));
-  palavras = palavras.slice().sort((a, b) => a.bbox.x0 - b.bbox.x0);
-  // escrita latina: "|" encostado numa palavra é o "I" (ou o "¡"); longe de tudo, é a borda do balão
-  if (IDIOMAS[idioma]?.escrita === 'latina') {
-    const hL = linha.bbox ? linha.bbox.y1 - linha.bbox.y0 : 0;
-    palavras = palavras.filter((w, k) => {
-      if (!/^[|]$/.test(w.text.trim())) return true;
-      const h = Math.max(hL, w.bbox.y1 - w.bbox.y0);
-      const ant = palavras[k - 1], prox = palavras[k + 1];
-      return (prox && prox.bbox.x0 - w.bbox.x1 < h) || (ant && w.bbox.x0 - ant.bbox.x1 < h * 0.6 && prox);
-    });
-  }
-  const alturaLinha = linha.bbox ? linha.bbox.y1 - linha.bbox.y0 : 0;
-  const escrita = IDIOMAS[idioma]?.escrita || 'latina';
-  const silabas = (t) => (t.match(/[가-힣]/g) || []).length;
-  const pont = (t) => SO_PONTUACAO.test(t.trim());
-  // coreano: a distância entre sílabas soltas da mesma palavra varia com a fonte (algumas são bem espaçadas).
-  // Usa a distância típica entre sílabas soltas desta linha como referência.
-  const distSoltas = [];
-  for (let k = 1; k < palavras.length; k++) {
-    const a = palavras[k - 1].text.trim(), b = palavras[k].text.trim();
-    if (!pont(a) && !pont(b) && (silabas(a) === 1 || silabas(b) === 1)) distSoltas.push(palavras[k].bbox.x0 - palavras[k - 1].bbox.x1);
-  }
-  distSoltas.sort((a, b) => a - b);
-  const distTipica = distSoltas.length ? distSoltas[(distSoltas.length - 1) >> 1] : 0;
-  let texto = '';
-  palavras.forEach((w, k) => {
-    const p = w.text.trim();
-    const ant = palavras[k - 1];
-    if (ant) {
-      const pa = ant.text.trim();
-      const h = Math.max(alturaLinha, ant.bbox.y1 - ant.bbox.y0, w.bbox.y1 - w.bbox.y0);
-      const dist = w.bbox.x0 - ant.bbox.x1;
-      let espaco;
-      if (escrita === 'latina') espaco = !pont(p) || dist > h * 0.3;
-      else if (escrita === 'coreana') {
-        if (pont(p)) espaco = false;                                   // pontuação fica colada
-        else if (pont(pa)) espaco = dist > h * 0.15;                   // depois de "," ou "..." costuma ter espaço
-        else if (dist > h * 0.6) espaco = true;                        // distância grande: com certeza é espaço
-        else if (silabas(pa) > 1 && silabas(p) > 1) espaco = dist > h * 0.25; // o OCR já separou as palavras
-        else espaco = dist > (distSoltas.length >= 2 ? Math.max(h * 0.35, distTipica * 1.5) : h * 0.45);
-      } else espaco = false;
-      texto += espaco ? ' ' : '';
-    }
-    texto += p;
-  });
-  return texto;
-}
-
-/** 1ª leitura: acha as linhas de texto da página. Imagens altas (webtoon) são lidas em fatias. */
-async function acharLinhas(bitmap, escala, idioma, aviso) {
-  const W = bitmap.width, H = bitmap.height;
-  const alturaFatia = Math.round(2600 / escala);
-  const sobra = Math.round(250 / escala);
-  const fatias = [];
-  for (let y = 0; y < H; y += alturaFatia - sobra) {
-    fatias.push({ y, h: Math.min(alturaFatia, H - y) });
-    if (y + alturaFatia >= H) break;
-  }
-  const linhas = [];
-  for (let i = 0; i < fatias.length; i++) {
-    const f = fatias[i];
-    if (fatias.length > 1) aviso(`Procurando os balões… parte ${i + 1} de ${fatias.length}`);
-    const data = await reconhecer(prepararRecorte(bitmap, 0, f.y, W, f.h, escala), '11', idioma);
-    // cada linha pertence à fatia que contém o seu centro (evita repetir o que está na sobreposição)
-    const iniDono = i === 0 ? 0 : f.y + sobra / 2;
-    const fimDono = i === fatias.length - 1 ? H : f.y + f.h - sobra / 2;
-    for (const l of data.lines || []) {
-      const texto = limparTexto(montarLinha(l, idioma, true), idioma);
-      if (!textoValido(texto, l.confidence)) continue;
-      const b = { x0: l.bbox.x0 / escala, x1: l.bbox.x1 / escala, y0: l.bbox.y0 / escala + f.y, y1: l.bbox.y1 / escala + f.y };
-      const cy = (b.y0 + b.y1) / 2;
-      if (cy >= iniDono && cy < fimDono) linhas.push({ texto, conf: l.confidence, ...b });
-    }
-  }
-  return linhas;
 }
 
 /**
@@ -458,53 +285,6 @@ function agruparLinhas(linhasBrutas, idioma) {
   return res.sort(ordemLeitura);
 }
 
-/**
- * 2ª leitura: relê cada balão recortado, no modo "bloco de texto", que é mais preciso.
- * Se o balão foi encontrado, lê ele inteiro (com o que está fora dele apagado):
- * assim pega também as linhas que a 1ª leitura deixou passar.
- */
-async function relerBalao(bitmap, g, escala, idioma) {
-  const lh = g.alturaLinha;
-  const b = g.balao;
-  let x0, y0, x1, y1;
-  if (b) {
-    x0 = Math.max(0, b.x0 / b.s - 2); y0 = Math.max(0, b.y0 / b.s - 2);
-    x1 = Math.min(bitmap.width, (b.x1 + 1) / b.s + 2); y1 = Math.min(bitmap.height, (b.y1 + 1) / b.s + 2);
-  } else {
-    x0 = Math.max(0, g.x0 - lh * 1.0); y0 = Math.max(0, g.y0 - lh * 0.6);
-    x1 = Math.min(bitmap.width, g.x1 + lh * 1.0); y1 = Math.min(bitmap.height, g.y1 + lh * 0.6);
-  }
-  // amplia (ou reduz) o recorte para as letras ficarem com ~48 px de altura, o tamanho que o OCR lê melhor
-  const e = Math.max(0.4, Math.min(4, 48 / Math.max(1, lh), 2500 / (x1 - x0), 2500 / (y1 - y0)));
-  const data = await reconhecer(prepararRecorte(bitmap, x0, y0, x1 - x0, y1 - y0, e, b), '6', idioma);
-  const linhas = [];
-  let somaConf = 0, nPalavras = 0;
-  for (const l of data.lines || []) {
-    const t = limparTexto(montarLinha(l, idioma, true), idioma);
-    if (!textoValido(t, l.confidence)) continue;                     // linha de ruído (borda, desenho)
-    for (const w of l.words || []) {
-      if (w.confidence >= 30 && /[\p{L}\d]/u.test(w.text)) { somaConf += w.confidence; nPalavras++; }
-    }
-    linhas.push({ texto: t, x0: x0 + l.bbox.x0 / e, x1: x0 + l.bbox.x1 / e, y0: y0 + l.bbox.y0 / e, y1: y0 + l.bbox.y1 / e });
-  }
-  if (!linhas.length) return;
-  const texto = juntarLinhas(linhas.map((l) => l.texto));
-  const conf = nPalavras ? somaConf / nPalavras : 0;
-  const nNovo = contarLetras(texto), nVelho = contarLetras(g.original);
-  let usar;
-  if (b) usar = conf >= 45 && textoValido(texto, conf) && nNovo >= nVelho * 0.6;
-  // sem balão: usa quando é tão confiável quanto a 1ª e não perdeu texto, ou quando achou texto a mais
-  else usar = conf >= 55 && textoValido(texto, conf) &&
-    ((nNovo >= nVelho * 0.75 && conf >= g.conf - 8) || (nNovo > nVelho * 1.1 && conf >= 60));
-  if (!usar) return;
-  g.original = texto;
-  g.conf = conf;
-  // a caixa da tradução passa a cobrir todas as linhas lidas
-  g.x0 = Math.min(...linhas.map((l) => l.x0)); g.y0 = Math.min(...linhas.map((l) => l.y0));
-  g.x1 = Math.max(...linhas.map((l) => l.x1)); g.y1 = Math.max(...linhas.map((l) => l.y1));
-  g.alturaLinha = linhas.reduce((s, l) => s + (l.y1 - l.y0), 0) / linhas.length;
-}
-
 // ------------------------------------------------------------ cor do fundo e tamanho do balão
 /** Cópia pequena e colorida da página, para descobrir a cor do balão. */
 function amostraColorida(bitmap) {
@@ -573,8 +353,6 @@ function ajustarAoBalao(g, a, W, H) {
     tinta: lum > 140 ? '#111' : '#fff',
   };
 }
-
-const luminancia = (c) => (c[0] * 299 + c[1] * 587 + c[2] * 114) / 1000;
 
 /**
  * Acha o balão em volta de um texto: pinta, a partir da borda do texto, toda a área contínua
@@ -677,14 +455,13 @@ async function lerPagina(blob, idioma, aviso) {
   const bitmap = await createImageBitmap(blob);
   try {
     const W = bitmap.width, H = bitmap.height;
-    const escala = Math.min(2, Math.max(0.4, LARGURA_OCR / W));
-    const amostra = amostraColorida(bitmap);
-    let grupos = juntarPorBalao(agruparLinhas(await acharLinhas(bitmap, escala, idioma, aviso), idioma), amostra);
-    for (let i = 0; i < grupos.length; i++) {
-      aviso(`Lendo balão ${i + 1} de ${grupos.length}…`);
-      await relerBalao(bitmap, grupos[i], escala, idioma);
+    const linhas = [];
+    for (const l of await lerTexto(bitmap, idioma, aviso)) {
+      const texto = limparTexto(l.texto, idioma);
+      if (textoValido(texto, l.conf)) linhas.push({ ...l, texto });
     }
-    grupos = tirarRepetidos(grupos).sort(ordemLeitura);
+    const amostra = amostraColorida(bitmap);
+    const grupos = tirarRepetidos(juntarPorBalao(agruparLinhas(linhas, idioma), amostra)).sort(ordemLeitura);
     grupos.forEach((g) => { g.caixa = ajustarAoBalao(g, amostra, W, H); delete g.balao; });
     return { W, H, grupos };
   } finally {
@@ -717,7 +494,10 @@ async function traduzirGoogle(textos, de, para) {
   // vários textos numa chamada; cada um volta separado
   const url = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=${de}&tl=${para}&` +
     textos.map((t) => 'q=' + encodeURIComponent(t)).join('&');
-  const r = await fetch(url);
+  let r;
+  try { r = await fetch(url); } catch (_) {
+    throw new Error('sem internet para traduzir. Conecte-se, ou escolha o tradutor "No aparelho" nas configurações.');
+  }
   if (!r.ok) throw new Error(r.status === 429 ? 'Google limitou os pedidos; espere uns minutos.' : 'Google respondeu ' + r.status);
   const json = await r.json();
   const lista = Array.isArray(json) ? json : [json];
@@ -783,7 +563,7 @@ async function traduzirPagina(textos, contexto, op) {
       const partes = junto.split('\n').map((s) => s.trim()).filter(Boolean);
       if (partes.length === ctx.length + pedaco.length) saida = partes.slice(ctx.length);
     } catch (e) {
-      if (/limitou/.test(e.message)) throw e;
+      if (/limitou|sem internet/.test(e.message)) throw e;
     }
     // se o tradutor misturou as linhas, traduz balão por balão (sem perder nenhum)
     if (!saida) saida = await chamarTradutor(pedaco, op);
@@ -881,7 +661,7 @@ function desenhar(r) {
 function ajustarFonte(div) {
   const larguraImg = $('imagem').clientWidth;
   if (!larguraImg) return;
-  let tamanho = Math.min(40, Math.max(8, parseFloat(div.dataset.alturaLinha) * larguraImg * 1.05));
+  let tamanho = Math.min(40, Math.max(8, parseFloat(div.dataset.alturaLinha) * larguraImg * 0.9));
   div.style.fontSize = tamanho + 'px';
   while ((div.scrollHeight > div.clientHeight + 1 || div.scrollWidth > div.clientWidth + 1) && tamanho > 6) {
     tamanho -= 0.5;
@@ -903,7 +683,36 @@ $('btnOriginal').onclick = () => {
   $('btnOriginal').classList.toggle('ativo', mostrarOriginal);
   $('btnOriginal').textContent = mostrarOriginal ? 'Ver tradução' : 'Ver original';
 };
-$('imagem').addEventListener('load', ajustarTodas);
+// ------------------------------------------------------------ enquadramento
+/**
+ * 'inteira' = a página toda cabe na tela (nada cortado); 'largura' = ocupa a largura e rola para baixo.
+ * No automático, tiras compridas (webtoon) vão pela largura, senão ficariam minúsculas.
+ */
+let ajusteManual = null; // escolhido no botão: vale até abrir outro capítulo
+function modoEfetivo() {
+  const img = $('imagem');
+  if (ajusteManual) return ajusteManual;
+  if (cfg.ajuste !== 'auto') return cfg.ajuste;
+  return img.naturalWidth && img.naturalHeight / img.naturalWidth > 2.2 ? 'largura' : 'inteira';
+}
+function enquadrar() {
+  const img = $('imagem'), visor = $('visor');
+  if (!img.naturalWidth || $('palco').hidden) return;
+  const proporcao = img.naturalWidth / img.naturalHeight;
+  const modo = modoEfetivo();
+  const largura = modo === 'inteira' ? Math.min(visor.clientWidth, visor.clientHeight * proporcao) : visor.clientWidth;
+  $('palco').style.width = Math.max(50, Math.floor(largura)) + 'px';
+  const btn = $('btnAjuste');
+  btn.textContent = modo === 'inteira' ? '↔' : '⤢';
+  btn.title = modo === 'inteira' ? 'Ocupar a largura da tela' : 'Mostrar a página inteira';
+  btn.setAttribute('aria-label', btn.title);
+}
+$('btnAjuste').onclick = () => {
+  ajusteManual = modoEfetivo() === 'inteira' ? 'largura' : 'inteira';
+  enquadrar();
+};
+$('imagem').addEventListener('load', () => { enquadrar(); ajustarTodas(); });
+new ResizeObserver(enquadrar).observe($('visor'));
 new ResizeObserver(ajustarTodas).observe($('palco'));
 
 document.addEventListener('keydown', (e) => {
@@ -930,6 +739,7 @@ $('btnConfig').onclick = () => {
   $('cfgDestino').value = cfg.destino;
   $('cfgMotor').value = cfg.motor;
   $('cfgMaiusculas').checked = cfg.maiusculas;
+  $('cfgAjuste').value = cfg.ajuste;
   $('infoLocal').textContent = suportaLocal()
     ? 'Este navegador tem tradutor no aparelho: na primeira vez ele baixa o idioma, depois funciona sem internet.'
     : 'Este navegador não tem tradutor no aparelho; o modo offline vai usar o Google como reserva.';
@@ -940,8 +750,11 @@ $('config').addEventListener('close', () => {
   cfg = {
     origem: $('cfgOrigem').value, destino: $('cfgDestino').value,
     motor: $('cfgMotor').value, maiusculas: $('cfgMaiusculas').checked,
+    ajuste: $('cfgAjuste').value,
   };
+  ajusteManual = null; // a escolha das configurações passa a valer
   salvarCfg();
+  enquadrar();
   if (paginas.length) irPara(atual); // refaz com as novas opções
 });
 
